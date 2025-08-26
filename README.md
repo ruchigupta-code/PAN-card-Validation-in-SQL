@@ -1,49 +1,120 @@
-# PAN-card-Validation-in-SQL
+--- PAN Number Validation Project using SQL ---
 
-Data Cleaning and Validation
-Objective
-You are tasked with cleaning and validating a dataset containing the Permanent
-Account Numbers (PAN) of Indian nationals. The goal is to ensure that each PAN
-number adheres to the official format and is categorised as either Valid or Invalid.
-The dataset is given in a separate Excel file.
+-- Create the stage table to store original given dataset
+drop table if exists stg_pan_numbers_dataset;
+create table stg_pan_numbers_dataset
+(
+	pan_number text
+);
 
-1. Data Cleaning and Preprocessing:
-Identify and handle missing data: PAN numbers may have missing values.
-These missing values need to be handled appropriately, either by
-removing rows or imputing values (depending on the context).
-Check for duplicates: Ensure there are no duplicate PAN numbers. If
-duplicates exist, remove them.
-Handle leading/trailing spaces: PAN numbers may have extra spaces
-before or after the actual number. Remove any such spaces.
-Correct letter case: Ensure that the PAN numbers are in uppercase letters
-(if any lowercase letters are present).
-2. PAN Format Validation: A valid PAN number follows the format:
-It is exactly 10 characters long.
-The format is as follows: AAAAA1234A
-The first five characters should be alphabetic (uppercase letters).
 
-1. Adjacent characters(alphabets) cannot be the same (like AABCD is
-invalid; AXBCD is valid)
-2. All five characters cannot form a sequence (like: ABCDE, BCDEF is
-invalid; ABCDX is valid)
-The next four characters should be numeric (digits).
-1. Adjacent characters(digits) cannot be the same (like 1123 is invalid;
-1923 is valid)
-2. All four characters cannot form a sequence (like: 1234, 2345)
-The last character should be alphabetic (uppercase letter).
-Example of a valid PAN: AHGVE1276F
-3. Categorisation:
-Valid PAN: If the PAN number matches the above format.
-Invalid PAN: If the PAN number does not match the correct format, is
-incomplete, or contains any non-alphanumeric characters.
-4. Tasks:
-Validate the PAN numbers based on the format mentioned above.
-Create two separate categories:
-Valid PAN
-Invalid PAN
-Create a summary report that provides the following:
-Total records processed
-Total valid PANs
-Total invalid PANs
-Total missing or incomplete PANs (if applicable)
+-- 1. Identify and handle missing data
+select * from stg_pan_numbers_dataset where pan_number is null; 
 
+
+-- 2. Check for duplicates
+select pan_number, count(1) 
+from stg_pan_numbers_dataset 
+where pan_number is not null
+group by pan_number
+having count(1) > 1; 
+
+select distinct * from stg_pan_numbers_dataset;
+
+
+-- 3. Handle leading/trailing spaces
+select *
+from stg_pan_numbers_dataset 
+where pan_number <> trim(pan_number)
+
+
+-- 4. Correct letter case
+select *
+from stg_pan_numbers_dataset 
+where pan_number <> upper(pan_number)
+
+
+-- New cleaned table:
+create table pan_numbers_dataset_cleaned
+as
+select distinct upper(trim(pan_number)) as pan_number
+from stg_pan_numbers_dataset 
+where pan_number is not null
+and TRIM(pan_number) <> ''
+
+
+
+-- Function to check if adjacent characters are repetative. 
+-- Returns true if adjacent characters are adjacent else returns false
+create or replace function fn_check_adjacent_repetition(p_str text)
+returns boolean
+language plpgsql
+as $$
+begin
+	for i in 1 .. (length(p_str) - 1)
+	loop
+		if substring(p_str, i, 1) = substring(p_str, i+1, 1)
+		then 
+			return true;
+		end if;
+	end loop;
+	return false;
+end;
+$$
+
+
+
+-- Function to check if characters are sequencial such as ABCDE, LMNOP, XYZ etc. 
+-- Returns true if characters are sequencial else returns false
+CREATE or replace function fn_check_sequence(p_str text)
+returns boolean
+language plpgsql
+as $$
+begin
+	for i in 1 .. (length(p_str) - 1)
+	loop
+		if ascii(substring(p_str, i+1, 1)) - ascii(substring(p_str, i, 1)) <> 1
+		then 
+			return false;
+		end if;
+	end loop;
+	return true;
+end;
+$$
+
+
+-- Valid Invalid PAN categorization
+create or replace view vw_valid_invalid_pans 
+as 
+with cte_cleaned_pan as
+		(select distinct upper(trim(pan_number)) as pan_number
+		from stg_pan_numbers_dataset 
+		where pan_number is not null
+		and TRIM(pan_number) <> ''),
+	cte_valid_pan as
+		(select *
+		from cte_cleaned_pan
+		where fn_check_adjacent_repetition(pan_number) = 'false'
+		and fn_check_sequence(substring(pan_number,1,5)) = 'false'
+		and fn_check_sequence(substring(pan_number,6,4)) = 'false'
+		and pan_number ~ '^[A-Z]{5}[0-9]{4}[A-Z]$')
+select cln.pan_number
+, case when vld.pan_number is null 
+			then 'Invalid PAN' 
+	   else 'Valid PAN' 
+  end as status
+from cte_cleaned_pan cln
+left join cte_valid_pan vld on vld.pan_number = cln.pan_number;
+
+	
+-- Summary report
+with cte as 
+	(SELECT 
+	    (SELECT COUNT(*) FROM stg_pan_numbers_dataset) AS total_processed_records,
+	    COUNT(*) FILTER (WHERE vw.status = 'Valid PAN') AS total_valid_pans,
+	    COUNT(*) FILTER (WHERE vw.status = 'Invalid PAN') AS total_invalid_pans
+	from  vw_valid_invalid_pans vw)
+select total_processed_records, total_valid_pans, total_invalid_pans
+, total_processed_records - (total_valid_pans+total_invalid_pans) as missing_incomplete_PANS
+from cte;
+  
