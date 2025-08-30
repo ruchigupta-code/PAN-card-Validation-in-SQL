@@ -1,120 +1,122 @@
---- PAN Number Validation Project using SQL ---
+# PAN Number Validation Project
 
--- Create the stage table to store original given dataset
-drop table if exists stg_pan_numbers_dataset;
-create table stg_pan_numbers_dataset
-(
-	pan_number text
-);
+## Overview
 
+This project focuses on cleaning and validating Permanent Account Numbers (PAN) using SQL in PostgreSQL. The goal is to ensure that PAN numbers conform to the official format and are categorized into **Valid PAN** or **Invalid PAN**. The process demonstrates SQL skills in data cleaning, regex-based validation, user-defined functions, and summary reporting.
 
--- 1. Identify and handle missing data
-select * from stg_pan_numbers_dataset where pan_number is null; 
+## Dataset
 
+The dataset contains a single column of PAN numbers (`Pan_Numbers`). The raw data may include:
 
--- 2. Check for duplicates
-select pan_number, count(1) 
-from stg_pan_numbers_dataset 
-where pan_number is not null
-group by pan_number
-having count(1) > 1; 
+* Missing values
+* Duplicate PANs
+* Leading/trailing spaces
+* Lowercase letters
+* Invalid formats
 
-select distinct * from stg_pan_numbers_dataset;
+These issues are addressed step by step before validation.
 
+## Validation Rules
 
--- 3. Handle leading/trailing spaces
-select *
-from stg_pan_numbers_dataset 
-where pan_number <> trim(pan_number)
+A **valid PAN** must satisfy the following:
 
+1. Exactly 10 characters long.
+2. Format: `AAAAA1234A`
 
--- 4. Correct letter case
-select *
-from stg_pan_numbers_dataset 
-where pan_number <> upper(pan_number)
+   * First 5 characters: uppercase alphabets.
+   * Next 4 characters: numeric digits.
+   * Last character: uppercase alphabet.
+3. Additional constraints:
 
+   * No adjacent identical characters (in alphabets or digits).
+   * First 5 characters cannot be sequential (e.g., ABCDE).
+   * Next 4 digits cannot be sequential (e.g., 1234).
 
--- New cleaned table:
-create table pan_numbers_dataset_cleaned
-as
-select distinct upper(trim(pan_number)) as pan_number
-from stg_pan_numbers_dataset 
-where pan_number is not null
-and TRIM(pan_number) <> ''
+Example of a valid PAN: `AHGVE1276F`
 
+## Steps Implemented
 
+### 1. Data Cleaning
 
--- Function to check if adjacent characters are repetative. 
--- Returns true if adjacent characters are adjacent else returns false
-create or replace function fn_check_adjacent_repetition(p_str text)
-returns boolean
-language plpgsql
-as $$
-begin
-	for i in 1 .. (length(p_str) - 1)
-	loop
-		if substring(p_str, i, 1) = substring(p_str, i+1, 1)
-		then 
-			return true;
-		end if;
-	end loop;
-	return false;
-end;
-$$
+* Remove missing PANs.
+* Remove duplicates.
+* Trim leading/trailing spaces.
+* Convert to uppercase.
 
+### 2. Functions for Validation
 
+* **`fn_check_adjacent_repetition`**: Flags PANs with adjacent identical characters.
+* **`fn_check_sequence`**: Flags PANs with sequential characters (like ABCDE or 1234).
 
--- Function to check if characters are sequencial such as ABCDE, LMNOP, XYZ etc. 
--- Returns true if characters are sequencial else returns false
-CREATE or replace function fn_check_sequence(p_str text)
-returns boolean
-language plpgsql
-as $$
-begin
-	for i in 1 .. (length(p_str) - 1)
-	loop
-		if ascii(substring(p_str, i+1, 1)) - ascii(substring(p_str, i, 1)) <> 1
-		then 
-			return false;
-		end if;
-	end loop;
-	return true;
-end;
-$$
+### 3. Validation Logic
 
+* Regex validation: `^[A-Z]{5}[0-9]{4}[A-Z]$`
+* Apply sequence and repetition checks.
+* Categorize into **Valid PAN** or **Invalid PAN**.
 
--- Valid Invalid PAN categorization
-create or replace view vw_valid_invalid_pans 
-as 
-with cte_cleaned_pan as
-		(select distinct upper(trim(pan_number)) as pan_number
-		from stg_pan_numbers_dataset 
-		where pan_number is not null
-		and TRIM(pan_number) <> ''),
-	cte_valid_pan as
-		(select *
-		from cte_cleaned_pan
-		where fn_check_adjacent_repetition(pan_number) = 'false'
-		and fn_check_sequence(substring(pan_number,1,5)) = 'false'
-		and fn_check_sequence(substring(pan_number,6,4)) = 'false'
-		and pan_number ~ '^[A-Z]{5}[0-9]{4}[A-Z]$')
-select cln.pan_number
-, case when vld.pan_number is null 
-			then 'Invalid PAN' 
-	   else 'Valid PAN' 
-  end as status
-from cte_cleaned_pan cln
-left join cte_valid_pan vld on vld.pan_number = cln.pan_number;
+### 4. Summary Report
 
-	
--- Summary report
-with cte as 
-	(SELECT 
-	    (SELECT COUNT(*) FROM stg_pan_numbers_dataset) AS total_processed_records,
-	    COUNT(*) FILTER (WHERE vw.status = 'Valid PAN') AS total_valid_pans,
-	    COUNT(*) FILTER (WHERE vw.status = 'Invalid PAN') AS total_invalid_pans
-	from  vw_valid_invalid_pans vw)
-select total_processed_records, total_valid_pans, total_invalid_pans
-, total_processed_records - (total_valid_pans+total_invalid_pans) as missing_incomplete_PANS
-from cte;
-  
+Generates counts of:
+
+* Total records processed
+* Valid PANs
+* Invalid PANs
+* Missing/incomplete PANs
+
+## Example Queries
+
+* **Check for duplicates:**
+
+```sql
+SELECT pan_number, COUNT(1)
+FROM stg_pan_numbers_dataset
+GROUP BY pan_number
+HAVING COUNT(1) > 1;
+```
+
+* **Regex validation for format:**
+
+```sql
+SELECT pan_number
+FROM pan_numbers_dataset_cleaned
+WHERE pan_number ~ '^[A-Z]{5}[0-9]{4}[A-Z]$';
+```
+
+* **Final categorization:**
+
+```sql
+SELECT pan_number, status
+FROM vw_valid_invalid_pans;
+```
+
+* **Summary report:**
+
+```sql
+WITH summary AS (
+  SELECT
+    (SELECT COUNT(*) FROM stg_pan_numbers_dataset) AS total_processed_records,
+    COUNT(*) FILTER (WHERE vw.status = 'Valid PAN') AS total_valid_pans,
+    COUNT(*) FILTER (WHERE vw.status = 'Invalid PAN') AS total_invalid_pans
+  FROM vw_valid_invalid_pans vw
+)
+SELECT *,
+       total_processed_records - (total_valid_pans + total_invalid_pans) AS missing_incomplete_pans
+FROM summary;
+```
+
+## Insights
+
+* PAN numbers often fail validation due to incorrect format, adjacent repetitions, or sequential patterns.
+* Regex alone is insufficient; additional business rules ensure stronger validation.
+* The summary provides a quick health check of the dataset.
+
+## Purpose
+
+This project demonstrates:
+
+* SQL-based **data cleaning**
+* Use of **regex and functions** for validation
+* **CTEs and Views** for structured queries
+* A **summary report** for stakeholders
+
+This project is suitable for inclusion in a GitHub portfolio to showcase SQL data quality and validation skills.
